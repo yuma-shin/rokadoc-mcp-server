@@ -7,9 +7,6 @@ dist/
 # Kiro specs
 .kiro/
 
-# Tests
-tests/
-
 # rokadoc API Reference
 docs/
 
