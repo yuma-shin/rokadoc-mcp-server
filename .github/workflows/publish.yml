@@ -3,7 +3,7 @@ name: Build and Publish Docker Image
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -15,8 +15,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'npm'
+          node-version: "22"
+          cache: "npm"
 
       - run: npm ci
       - run: npm run build
@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -53,6 +53,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=raw,value=latest
 
       - name: Build and push
@@ -65,3 +66,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Update major version tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Extract major version from tag (e.g., v1.2.3 -> v1)
+          TAG="${GITHUB_REF#refs/tags/}"
+          MAJOR=$(echo "$TAG" | grep -oP '^v\d+')
+
+          if [ -n "$MAJOR" ]; then
+            # Delete existing major tag (if any) and recreate pointing to current commit
+            git tag -f "$MAJOR"
+            git push origin "$MAJOR" --force
+            echo "Updated Git tag: $MAJOR -> $TAG"
+          fi
