@@ -6,10 +6,37 @@ VS Code、Kiro、Claude Desktop等のMCPクライアントから、ドキュメ�
 
 ## 前提条件
 
-- **Docker**: コンテナのビルドおよび実行に必要
+- **Docker**: コンテナの実行に必要
 - **rokadoc API Key**: rokadocサービスへの認証に使用するAPIキー
 
-## Docker Imageのビルド
+## イメージの取得
+
+Docker Hub または GitHub Container Registry のどちらからでも利用可能です。
+
+### Docker Hub
+
+```bash
+docker pull snackpans/rokadoc-mcp-server
+```
+
+### GitHub Container Registry (GHCR)
+
+```bash
+docker pull ghcr.io/yuma-shin/rokadoc-mcp-server:latest
+```
+
+### タグ一覧
+
+| タグ     | 説明                                   |
+| -------- | -------------------------------------- |
+| `latest` | 最新リリース                           |
+| `1`      | v1系の最新（メジャーバージョン追従）   |
+| `1.0`    | v1.0系の最新（マイナーバージョン追従） |
+| `1.0.0`  | 特定バージョン固定                     |
+
+安定運用にはメジャーバージョンタグ（例: `1`）の利用を推奨します。
+
+## ソースからビルドする場合
 
 ```bash
 docker build -t rokadoc-mcp-server .
@@ -17,8 +44,16 @@ docker build -t rokadoc-mcp-server .
 
 ## コンテナの起動
 
+Docker Hub のイメージを使用する場合:
+
 ```bash
-docker run -i --rm -e ROKADOC_API_KEY=<your-api-key> rokadoc-mcp-server
+docker run -i --rm -e ROKADOC_API_KEY=<your-api-key> snackpans/rokadoc-mcp-server
+```
+
+GHCR のイメージを使用する場合:
+
+```bash
+docker run -i --rm -e ROKADOC_API_KEY=<your-api-key> ghcr.io/yuma-shin/rokadoc-mcp-server
 ```
 
 ### 環境変数
@@ -36,7 +71,7 @@ docker run -i --rm -e ROKADOC_API_KEY=<your-api-key> rokadoc-mcp-server
 docker run -i --rm \
   -e ROKADOC_API_KEY=<your-api-key> \
   -e ROKADOC_BASE_URL=https://rokadoc.your-company.com \
-  rokadoc-mcp-server
+  snackpans/rokadoc-mcp-server
 ```
 
 注意事項:
@@ -74,7 +109,7 @@ docker run -i --rm \
         "ROKADOC_API_KEY",
         "-v",
         "${userHome}:/workspace",
-        "rokadoc-mcp-server"
+        "snackpans/rokadoc-mcp-server"
       ],
       "env": {
         "ROKADOC_API_KEY": "${input:rokadoc-api-key}"
@@ -83,6 +118,8 @@ docker run -i --rm \
   }
 }
 ```
+
+GHCRを使う場合は `"snackpans/rokadoc-mcp-server"` を `"ghcr.io/yuma-shin/rokadoc-mcp-server"` に置き換えてください。
 
 この設定では、ホスト上の `~/Documents/report.pdf` をコンテナ内で `/workspace/Documents/report.pdf` としてアクセスできます。`convert_document` ツールには **コンテナ内のパス** を指定してください。
 
@@ -112,7 +149,7 @@ docker run -i --rm \
         "--rm",
         "-e",
         "ROKADOC_API_KEY",
-        "rokadoc-mcp-server"
+        "snackpans/rokadoc-mcp-server"
       ],
       "env": {
         "ROKADOC_API_KEY": "${input:rokadoc-api-key}"
@@ -139,7 +176,7 @@ docker run -i --rm \
         "ROKADOC_API_KEY=<your-api-key>",
         "-v",
         "C:\\Users\\<username>:/workspace",
-        "rokadoc-mcp-server"
+        "snackpans/rokadoc-mcp-server"
       ]
     }
   }
@@ -165,7 +202,7 @@ Base URLを変更する場合は `args` に環境変数を追加します:
         "ROKADOC_BASE_URL=https://rokadoc.your-company.com",
         "-v",
         "${userHome}:/workspace",
-        "rokadoc-mcp-server"
+        "snackpans/rokadoc-mcp-server"
       ],
       "env": {
         "ROKADOC_API_KEY": "${input:rokadoc-api-key}"
