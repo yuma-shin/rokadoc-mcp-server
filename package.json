@@ -1,0 +1,31 @@
+{
+  "name": "rokadoc-mcp-server",
+  "version": "1.0.0",
+  "description": "rokadoc MCP Server - Model Context Protocol server for rokadoc RAG service",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:property": "vitest run tests/property/",
+    "test:unit": "vitest run tests/unit/",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "rokadoc",
+    "rag",
+    "document-conversion"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "fast-check": "^4.1.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

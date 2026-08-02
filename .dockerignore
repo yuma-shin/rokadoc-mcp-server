@@ -1,0 +1,8 @@
+node_modules
+dist
+tests
+.kiro
+.git
+.gitignore
+*.md
+vitest.config.ts
