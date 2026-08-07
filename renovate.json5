@@ -3,7 +3,7 @@
   dependencyDashboard: false,
   labels: ["dependencies"],
   minimumReleaseAge: "7 days",
-  minumumReleaseAgeBehaviour: "timestamp-optional",
+  minimumReleaseAgeBehaviour: "timestamp-optional",
   groupName: "all dependencies",
   packageRules: [
     {
