@@ -1,0 +1,30 @@
+{
+  automerge: false,
+  dependencyDashboard: false,
+  labels: ["dependencies"],
+  minimumReleaseAge: "7 days",
+  minumumReleaseAgeBehaviour: "timestamp-optional",
+  groupName: "all dependencies",
+  packageRules: [
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github-actions",
+      pinDigests: true,
+    },
+    {
+      matchUpdateTypes: ["major"],
+      prBodyNotes: [
+        ":warning: **メジャーバージョンの更新が含まれます。CHANGELOG を確認してください。**",
+      ],
+    },
+  ],
+  prBodyTemplate: "{{{header}}}{{{notes}}}{{{table}}}{{{changelogs}}}",
+  prConcurrentLimit: 0,
+  prHourlyLimit: 0,
+  rangeStrategy: "bump",
+  rebaseWhen: "conflicted",
+  semanticCommits: "enabled",
+  separateMajorMinor: false,
+  timezone: "Asia/Tokyo",
+  reviewers: ["yuma-shin"],
+}
