@@ -216,6 +216,21 @@ Base URLを変更する場合は `args` に環境変数を追加します:
 
 全ツールは `space_id` または `space_name` パラメータを受け付けます。スペースを指定するとそのスペース内に限定して操作を行います。未指定時は全スペースが対象です。`space_name` を指定した場合、内部でスペース一覧API（`GET /v1/user/spaces/join`）を呼び出し、対応する `space_id` を自動的に解決します。
 
+### ツールアノテーション
+
+各ツールにはMCP仕様のアノテーションヒントを宣言しています。MCPクライアントはこの情報をもとに、実行前の確認ダイアログ表示などの判断を行います。
+
+| ツール                  | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
+| ----------------------- | ------------ | --------------- | -------------- | ------------- |
+| `convert_document`      | `false`      | `false`         | `false`        | `true`        |
+| `list_conversions`      | `true`       | `false`         | `true`         | `true`        |
+| `get_conversion_result` | `true`       | `false`         | `true`         | `true`        |
+| `search_documents`      | `true`       | `false`         | `true`         | `true`        |
+
+- `convert_document` は変換ジョブを新規作成するため書き込み系です。既存データの削除・上書きは行いませんが、呼び出しごとに新しい `conversion_id` が払い出されるため冪等ではありません
+- 他の3ツールはrokadoc APIに対して参照のみを行い、状態を変更しません
+- 全ツールが外部サービス（rokadoc API）と通信するため `openWorldHint` は `true` です
+
 ### convert_document
 
 ドキュメントファイルをrokadocに送信し、構造化テキストへの変換を開始します。

@@ -2,7 +2,24 @@ import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { z } from "zod";
+import { createServer } from "../../src/server.js";
+import { RokadocApiClient } from "../../src/services/rokadoc-client.js";
+
+/** 全ツール名 */
+const TOOL_NAMES = [
+  "convert_document",
+  "list_conversions",
+  "get_conversion_result",
+  "search_documents",
+] as const;
+
+/** MCP仕様で定義された4つのアノテーションヒント */
+const ANNOTATION_HINTS = [
+  "readOnlyHint",
+  "destructiveHint",
+  "idempotentHint",
+  "openWorldHint",
+] as const;
 
 /**
  * MCPサーバーのユニットテスト
@@ -10,6 +27,7 @@ import { z } from "zod";
  * Requirements: 1.3, 1.4, 1.6
  * - initializeレスポンスの内容検証（サーバー名、バージョン、MCP対応バージョン）
  * - tools/listレスポンスに4つのツールが含まれることの検証
+ * - 各ツールにアノテーションヒントが宣言されていることの検証
  * - 不正JSON-RPCリクエスト受信時のエラーレスポンス検証
  */
 describe("MCPサーバー", () => {
@@ -19,81 +37,10 @@ describe("MCPサーバー", () => {
   let serverTransport: InMemoryTransport;
 
   beforeAll(async () => {
-    // src/index.ts と同じ設定でサーバーを作成
-    server = new McpServer({
-      name: "rokadoc-mcp-server",
-      version: "1.0.0",
-    });
-
-    // src/index.ts と同じZodスキーマでツールを登録
-    server.tool(
-      "convert_document",
-      "ドキュメントファイルをrokadocに送信して構造化テキストに変換する",
-      {
-        file_path: z.string().min(1).describe("変換対象のファイルパス"),
-        from_page: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("開始ページ（正の整数）"),
-        to_page: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("終了ページ（正の整数）"),
-      },
-      async () => ({
-        content: [{ type: "text" as const, text: "mock response" }],
-      }),
-    );
-
-    server.tool(
-      "list_conversions",
-      "変換ジョブの一覧を取得する",
-      {},
-      async () => ({
-        content: [{ type: "text" as const, text: "mock response" }],
-      }),
-    );
-
-    server.tool(
-      "get_conversion_result",
-      "指定された変換ジョブの結果を取得する",
-      {
-        conversion_id: z.string().min(1).describe("変換ジョブID"),
-      },
-      async () => ({
-        content: [{ type: "text" as const, text: "mock response" }],
-      }),
-    );
-
-    server.tool(
-      "search_documents",
-      "rokadocに登録されたドキュメントに対してRAG検索を実行する",
-      {
-        query: z
-          .string()
-          .min(1)
-          .max(1000)
-          .describe("検索クエリ（1〜1000文字）"),
-        tags: z
-          .array(z.string())
-          .optional()
-          .describe("タグフィルタ（AND条件）"),
-        max_results: z
-          .number()
-          .int()
-          .positive()
-          .default(20)
-          .optional()
-          .describe("最大取得件数（デフォルト: 20）"),
-      },
-      async () => ({
-        content: [{ type: "text" as const, text: "mock response" }],
-      }),
-    );
+    // src/server.ts の登録処理をそのまま使用する（登録内容の二重定義を避ける）
+    // APIクライアントは呼び出されないためスタブで十分
+    const stubApiClient = {} as RokadocApiClient;
+    server = createServer(stubApiClient);
 
     // InMemoryTransportペアを作成
     [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -184,6 +131,79 @@ describe("MCPサーバー", () => {
       );
       expect(convertTool).toBeDefined();
       expect(convertTool!.inputSchema.required).toContain("file_path");
+    });
+  });
+
+  describe("ツールアノテーションの検証", () => {
+    it("全ツールにannotationsが含まれること", async () => {
+      const result = await client.listTools();
+      for (const tool of result.tools) {
+        expect(
+          tool.annotations,
+          `${tool.name} に annotations がありません`,
+        ).toBeDefined();
+      }
+    });
+
+    it.each(TOOL_NAMES)(
+      "%s に4つのヒントがすべてboolean値で宣言されていること",
+      async (toolName) => {
+        const result = await client.listTools();
+        const tool = result.tools.find((t) => t.name === toolName);
+        expect(tool).toBeDefined();
+
+        for (const hint of ANNOTATION_HINTS) {
+          const value = tool!.annotations?.[hint];
+          expect(
+            typeof value,
+            `${toolName} の ${hint} が boolean ではありません（実際: ${typeof value}）`,
+          ).toBe("boolean");
+        }
+      },
+    );
+
+    it("convert_document は書き込み系・非冪等として宣言されること", async () => {
+      const result = await client.listTools();
+      const tool = result.tools.find((t) => t.name === "convert_document");
+      expect(tool!.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+    });
+
+    it.each(["list_conversions", "get_conversion_result", "search_documents"])(
+      "%s は読み取り専用・冪等として宣言されること",
+      async (toolName) => {
+        const result = await client.listTools();
+        const tool = result.tools.find((t) => t.name === toolName);
+        expect(tool!.annotations).toMatchObject({
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        });
+      },
+    );
+
+    it("読み取り専用ツールのdestructiveHintがtrueでないこと", async () => {
+      const result = await client.listTools();
+      for (const tool of result.tools) {
+        if (tool.annotations?.readOnlyHint === true) {
+          expect(
+            tool.annotations.destructiveHint,
+            `${tool.name} は読み取り専用だが destructiveHint が true`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it("全ツールが外部API通信を行うためopenWorldHintがtrueであること", async () => {
+      const result = await client.listTools();
+      for (const tool of result.tools) {
+        expect(tool.annotations?.openWorldHint, `${tool.name}`).toBe(true);
+      }
     });
   });
 
