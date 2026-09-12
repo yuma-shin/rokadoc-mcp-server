@@ -96,6 +96,33 @@ describe("Feature: rokadoc-mcp-server, Property 2: 不正URL形式の拒否", ()
     );
   });
 
+  /**
+   * **Validates: Requirements 2.5**（Feature: npm-package-distribution の要件1.8 非回帰）
+   *
+   * 有効なスキームを含んでいても先頭にそれ以外の文字（空白を含む）がある場合は
+   * 拒否される。環境変数 `ROKADOC_BASE_URL` に空白混じりの値が入る実運用の
+   * ケースを含めるための生成器である。
+   */
+  it("有効なスキームの前に文字が付加された文字列が拒否される", () => {
+    const leadingNoiseArb = fc.constantFrom(
+      " ",
+      "  ",
+      "\t",
+      "\n",
+      "\r\n",
+      "url=",
+      "<",
+      '"',
+    );
+
+    fc.assert(
+      fc.property(leadingNoiseArb, validUrlArb, (noise, url) => {
+        expect(validateUrlFormat(noise + url)).toBe(false);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
   it("代表的な不正スキームが拒否される", () => {
     fc.assert(
       fc.property(

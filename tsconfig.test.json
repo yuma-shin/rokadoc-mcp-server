@@ -1,0 +1,15 @@
+{
+  // テストコードの型チェック専用の設定（`npm run typecheck` から使用する）。
+  // ビルド用の tsconfig.json は include: ["src/**/*"] のままにし、
+  // tests/ と scripts/ をビルド成果物（dist/）へ一切影響させない。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*.d.mts"],
+  "exclude": ["node_modules", "dist"]
+}
