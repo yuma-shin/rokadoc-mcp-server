@@ -1,0 +1,486 @@
+name: Publish NPM Package
+
+on:
+  push:
+    branches: [main]
+    # v* ではなく v*.*.* とする。publish.yml が強制pushする v1 形式の
+    # メジャータグに一致させないため（ドット2個を要求する）
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  # 公開処理途中のキャンセルによる「片方のレジストリにのみ公開された」状態を避ける
+  cancel-in-progress: false
+
+permissions:
+  contents: read # checkout のみ。タグ作成・push は行わない（要件6-2）
+  id-token: write # npm provenance（要件4-6）
+  packages: write # GitHub Packages 公開（要件5-4）
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # 要件4-2
+    env:
+      PUBLIC_PACKAGE_NAME: rokadoc-mcp-server
+      SCOPED_PACKAGE_NAME: "@yuma-shin/rokadoc-mcp-server"
+      NPM_REGISTRY: https://registry.npmjs.org
+      GHP_REGISTRY: https://npm.pkg.github.com
+      IS_RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: "npm"
+
+      - name: Log toolchain versions
+        run: |
+          set -uo pipefail
+          echo "node=$(node --version)"
+          echo "npm=$(npm --version)"
+
+      - name: Validate Release_Tag and derive Package_Version
+        id: version
+        if: env.IS_RELEASE_TAG == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          # 0以上999999以下・先頭ゼロなしの整数3つをドット連結したものだけを許可
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]]; then
+            echo "::error::サポート対象外のタグ形式です。actual='${TAG}' expected='v<major>.<minor>.<patch>'（各要素は0〜999999、先頭ゼロ不可、プレリリース識別子およびビルドメタデータは非対応）"
+            exit 1
+          fi
+          # ${TAG#v} は先頭の v を1個だけ除去する（## ではない）
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Package_Version=${TAG#v}（Release_Tag=${TAG}）"
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - run: npm test
+      # --- 公開前検証ゲート（要件2.6 / 1.2 / 1.6 / 9.10）---
+      # この3ゲート（タグ形式 / Build_Artifact / NPM.md）を通過するまで、
+      # いかなるレジストリへも公開要求を送信しない。いずれもNGなら即時中断する。
+
+      - name: Verify Build_Artifact (dist/index.js and shebang)
+        if: env.IS_RELEASE_TAG == 'true'
+        run: |
+          set -uo pipefail
+          ARTIFACT="dist/index.js"
+          EXPECTED='#!/usr/bin/env node'
+          if [ ! -f "${ARTIFACT}" ]; then
+            echo "::error::Build_Artifact が生成されていません。expected_path='${ARTIFACT}'（npm run build の結果を確認してください）"
+            exit 1
+          fi
+          # 1行目のみを取り出し、CRLF由来のCRを除去して比較する
+          ACTUAL_FIRST_LINE="$(head -n 1 "${ARTIFACT}" | tr -d '\r')"
+          if [ "${ACTUAL_FIRST_LINE}" != "${EXPECTED}" ]; then
+            # BOM・先頭空白の混入を判別できるよう先頭バイト列も併記する
+            HEAD_BYTES="$(head -c 32 "${ARTIFACT}" | od -An -tx1 | tr -s '[:space:]' ' ')"
+            echo "::error::Build_Artifact の1行目がシバン行ではありません。path='${ARTIFACT}' actual='${ACTUAL_FIRST_LINE}' expected='${EXPECTED}' head_bytes='${HEAD_BYTES}'"
+            exit 1
+          fi
+          echo "Build_Artifact 検証OK: ${ARTIFACT} の1行目は ${EXPECTED} です。"
+
+      - name: Verify NPM_Readme (NPM.md) exists
+        if: env.IS_RELEASE_TAG == 'true'
+        run: |
+          set -uo pipefail
+          NPM_README="NPM.md"
+          if [ ! -f "${NPM_README}" ]; then
+            echo "::error::NPM_Readme が存在しません。expected_path='${NPM_README}'（Package_Prepack_Process が README.md へ複写する元ファイルです）"
+            exit 1
+          fi
+          echo "NPM_Readme 検証OK: ${NPM_README}（$(wc -c < "${NPM_README}") バイト）"
+
+      # --- Package_Version の書き換え（要件6.1 / 6.5）---
+      # 書き換え前後の値はスクリプトが標準出力へ出す。
+      # コミット・タグ作成・push は行わない（permissions は contents: read）。
+      - name: Set Package_Version in workspace manifest
+        if: env.IS_RELEASE_TAG == 'true'
+        run: node scripts/set-package-field.mjs version "${{ steps.version.outputs.version }}"
+      # --- Registry_Publish_Step 1: 公開npmレジストリ（要件4.4〜4.12 / 5.1）---
+      # このステップは失敗してもジョブを中断しない。結果を NPM_RESULT へ記録して
+      # 常に exit 0 で終わることで、Step 2（GitHub Packages）が Step 1 の結果に
+      # 関わらず必ず実行される構造を保つ。
+      - name: "Registry_Publish_Step 1: Public NPM Registry"
+        if: env.IS_RELEASE_TAG == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          # 既定シェル（bash -e）の -e を無効化する。公開の失敗は自分で捕捉して
+          # 結果文字列へ落とし込み、ステップ自体は常に成功として終える。
+          set +e
+
+          RESULT=failed
+          PKG="${PUBLIC_PACKAGE_NAME}"
+          VER="${PACKAGE_VERSION}"
+          REGISTRY_LABEL="Public_NPM_Registry(${NPM_REGISTRY})"
+
+          # scripts/lib/release.mjs（タスク2.7 / 2.9）と同一の境界値
+          MAX_ATTEMPTS=3      # 同一バージョンに対する試行は合計3回まで（要件4.10）
+          MIN_INTERVAL=10     # 連続する試行の間隔は10秒以上（要件4.10）
+          BUDGET=600          # 1レジストリあたりの総予算は600秒（要件4.12）
+
+          # 公開失敗の分類。判定に使うトークンは classifyPublishError と同一で、
+          # 行頭の装飾プレフィックス（npm ERR! など）には依存しない。
+          # retryable / conflict / auth / unknown のいずれか1語を標準出力へ返す。
+          classify_publish_failure() {
+            local output="$1" code="$2"
+            if [ "${code}" -eq 124 ]; then
+              printf 'retryable'
+              return 0
+            fi
+            # E403 は権限不足でも重複公開でも同じコードになるため本文で切り分ける
+            if grep -qiE '\b(EPUBLISHCONFLICT|E409)\b' <<< "${output}" ||
+              { grep -qiE '\bE403\b' <<< "${output}" &&
+                grep -qiE 'cannot publish over|previously published' <<< "${output}"; }; then
+              printf 'conflict'
+              return 0
+            fi
+            if grep -qiE '\b(ENEEDAUTH|E401|EOTP|EAUTHIP|E403)\b' <<< "${output}"; then
+              printf 'auth'
+              return 0
+            fi
+            if grep -qiE '\b(ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ESOCKETTIMEDOUT|E500|E502|E503|E504)\b' <<< "${output}"; then
+              printf 'retryable'
+              return 0
+            fi
+            printf 'unknown'
+          }
+
+          # 公開済みバージョンの事前照会（要件4.7）
+          # 戻り値: 0=未公開 / 1=公開済み / 2=判定不能（ネットワーク等）
+          # 照会失敗を未公開と誤認しないことが要点である。
+          probe_published() {
+            local pkg="$1" ver="$2" registry="$3" out
+            if out="$(npm view "${pkg}@${ver}" version --registry="${registry}" 2>&1)"; then
+              [ -n "${out}" ] && return 1
+              return 0
+            fi
+            # 未公開は両レジストリとも E404 として現れる（prerequisites.md 6節）
+            if grep -qE 'E404|is not in this registry|no such package' <<< "${out}"; then
+              return 0
+            fi
+            echo "::warning::公開済みバージョンの照会に失敗しました（registry=${registry}）。未公開と断定せず公開を試行します。"
+            return 2
+          }
+
+          # リトライ + タイムアウトのラッパ（要件4.10 / 4.12）
+          # 戻り値: 0=成功 / 1=失敗 / 2=重複公開によるスキップ
+          publish_with_retry() {
+            local label="$1"; shift
+            local attempt=1 started elapsed remaining rc out category
+            started=${SECONDS}
+            while :; do
+              elapsed=$(( SECONDS - started ))
+              remaining=$(( BUDGET - elapsed ))
+              if [ "${remaining}" -le 0 ]; then
+                echo "::error::公開処理がタイムアウトしました registry=${label} elapsed=${elapsed}s budget=${BUDGET}s"
+                return 1
+              fi
+              # timeout に残予算を渡すことで「総予算600秒以内」と「試行3回・間隔10秒以上」を同時に満たす
+              out="$(timeout "${remaining}" "$@" 2>&1)"
+              rc=$?
+              printf '%s\n' "${out}"
+              if [ "${rc}" -eq 0 ]; then
+                return 0
+              fi
+              if [ "${rc}" -eq 124 ]; then
+                echo "::error::公開処理がタイムアウトしました registry=${label} elapsed=$(( SECONDS - started ))s budget=${BUDGET}s"
+                return 1
+              fi
+              category="$(classify_publish_failure "${out}" "${rc}")"
+              case "${category}" in
+                conflict)
+                  echo "公開をスキップします: ${PKG}@${VER} registry=${label}（理由: レジストリが同一バージョンの重複公開を拒否したため既に公開済みと判断）"
+                  return 2
+                  ;;
+                auth)
+                  echo "::error::認証が拒否されたか権限が不足しています registry=${label} exit_code=${rc}。再試行しません。Registry_Credential（GitHub Secrets の設定値）を確認してください。既に公開済みの Package_Version には一切変更を加えません。"
+                  return 1
+                  ;;
+                retryable) ;;
+                *)
+                  echo "::error::既知の分類に該当しない失敗のため再試行しません registry=${label} exit_code=${rc} category=${category}"
+                  return 1
+                  ;;
+              esac
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::公開に失敗しました registry=${label} attempts=${attempt} last_exit_code=${rc} last_category=${category}"
+                return 1
+              fi
+              echo "::warning::公開に失敗したため再試行します registry=${label} attempt=${attempt}/${MAX_ATTEMPTS} exit_code=${rc} category=${category}"
+              attempt=$(( attempt + 1 ))
+              sleep "${MIN_INTERVAL}"
+            done
+          }
+
+          # 認証情報の未設定・空文字列・空白のみを検出する（値は一切出力しない。要件4.5 / 4.9）
+          if [ -z "${NODE_AUTH_TOKEN//[[:space:]]/}" ]; then
+            echo "::error::NPM_TOKEN シークレットが未設定または空です（値は出力しません）。${REGISTRY_LABEL} への公開要求は送信しません。"
+          else
+            probe_published "${PKG}" "${VER}" "${NPM_REGISTRY}"
+            PROBE_RC=$?
+            if [ "${PROBE_RC}" -eq 1 ]; then
+              echo "公開をスキップします: ${PKG}@${VER} registry=${REGISTRY_LABEL}（理由: 同一の Package_Version が既に公開済み）"
+              RESULT=skipped
+            else
+              # 未公開（0）と判定不能（2）はいずれも公開を試行する。判定不能を未公開と
+              # 誤認しても、重複は conflict として skipped に落ちる（二重の守り）。
+              # 公開先レジストリは setup-node が生成した .npmrc が決定する。
+              # --access は publishConfig.access で代替しているため付けない。
+              publish_with_retry "${REGISTRY_LABEL}" npm publish --provenance
+              case $? in
+                0)
+                  RESULT=success
+                  echo "公開に成功しました: ${PKG}@${VER} -> ${REGISTRY_LABEL}"
+                  ;;
+                2)
+                  RESULT=skipped
+                  ;;
+                *)
+                  RESULT=failed
+                  ;;
+              esac
+            fi
+          fi
+
+          echo "NPM_RESULT=${RESULT}" >> "$GITHUB_ENV"
+          echo "Registry_Publish_Step 1 の結果: ${RESULT}（${PKG}@${VER} / registry=${REGISTRY_LABEL}）"
+          # ジョブを中断させず Step 2 へ進む（要件5.1 / 5.7）
+          exit 0
+      # --- Registry_Publish_Step 2: GitHub Packages（要件5.1〜5.11 / 6.6）---
+      # 2回目の setup-node は .npmrc を再生成して認証先を GitHub Packages へ切り替える。
+      # 生成される .npmrc はトークン値そのものではなく ${NODE_AUTH_TOKEN} 参照を書き込む。
+      # このステップの if 条件に Step 1 の結果（NPM_RESULT）を参照する式は含めない。
+      # Step 1 の結果に関わらず必ず実行する（要件5.1）。
+      - name: Configure npm for GitHub Packages
+        if: env.IS_RELEASE_TAG == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          registry-url: https://npm.pkg.github.com
+          scope: "@yuma-shin"
+
+      # 再ビルドは行わない。dist/ は npm run build で1度だけ生成したものをそのまま使う（要件5.5）。
+      - name: "Registry_Publish_Step 2: GitHub Packages"
+        if: env.IS_RELEASE_TAG == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          # 既定シェル（bash -e）の -e を無効化する。公開の失敗は自分で捕捉して
+          # 結果文字列へ落とし込み、ステップ自体は常に成功として終える。
+          set +e
+
+          RESULT=failed
+          PKG="${SCOPED_PACKAGE_NAME}"
+          # Package_Version は Step 1 と同一の導出結果（steps.version.outputs.version）を参照する（要件6.6）
+          VER="${PACKAGE_VERSION}"
+          REGISTRY_LABEL="GitHub_Packages_Registry(${GHP_REGISTRY})"
+
+          # scripts/lib/release.mjs（タスク2.7 / 2.9）と同一の境界値
+          MAX_ATTEMPTS=3      # 同一バージョンに対する試行は合計3回まで（要件5.11）
+          MIN_INTERVAL=10     # 連続する試行の間隔は10秒以上（要件5.11）
+          BUDGET=600          # 1レジストリあたりの総予算は600秒（要件5.9）
+
+          # 公開失敗の分類。Step 1 と同一の実装（ステップローカルのシェル関数のため再宣言する）。
+          # retryable / conflict / auth / unknown のいずれか1語を標準出力へ返す。
+          classify_publish_failure() {
+            local output="$1" code="$2"
+            if [ "${code}" -eq 124 ]; then
+              printf 'retryable'
+              return 0
+            fi
+            # E403 は権限不足でも重複公開でも同じコードになるため本文で切り分ける
+            if grep -qiE '\b(EPUBLISHCONFLICT|E409)\b' <<< "${output}" ||
+              { grep -qiE '\bE403\b' <<< "${output}" &&
+                grep -qiE 'cannot publish over|previously published' <<< "${output}"; }; then
+              printf 'conflict'
+              return 0
+            fi
+            if grep -qiE '\b(ENEEDAUTH|E401|EOTP|EAUTHIP|E403)\b' <<< "${output}"; then
+              printf 'auth'
+              return 0
+            fi
+            if grep -qiE '\b(ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ESOCKETTIMEDOUT|E500|E502|E503|E504)\b' <<< "${output}"; then
+              printf 'retryable'
+              return 0
+            fi
+            printf 'unknown'
+          }
+
+          # 公開済みバージョンの事前照会（要件5.6）
+          # 戻り値: 0=未公開 / 1=公開済み / 2=判定不能（ネットワーク等）
+          probe_published() {
+            local pkg="$1" ver="$2" registry="$3" out
+            if out="$(npm view "${pkg}@${ver}" version --registry="${registry}" 2>&1)"; then
+              [ -n "${out}" ] && return 1
+              return 0
+            fi
+            # 未公開は両レジストリとも E404 として現れる（prerequisites.md 6節）
+            if grep -qE 'E404|is not in this registry|no such package' <<< "${out}"; then
+              return 0
+            fi
+            echo "::warning::公開済みバージョンの照会に失敗しました（registry=${registry}）。未公開と断定せず公開を試行します。"
+            return 2
+          }
+
+          # リトライ + タイムアウトのラッパ（要件5.9 / 5.11）
+          # 戻り値: 0=成功 / 1=失敗 / 2=重複公開によるスキップ
+          publish_with_retry() {
+            local label="$1"; shift
+            local attempt=1 started elapsed remaining rc out category
+            started=${SECONDS}
+            while :; do
+              elapsed=$(( SECONDS - started ))
+              remaining=$(( BUDGET - elapsed ))
+              if [ "${remaining}" -le 0 ]; then
+                echo "::error::公開処理がタイムアウトしました registry=${label} elapsed=${elapsed}s budget=${BUDGET}s"
+                return 1
+              fi
+              # timeout に残予算を渡すことで「総予算600秒以内」と「試行3回・間隔10秒以上」を同時に満たす
+              out="$(timeout "${remaining}" "$@" 2>&1)"
+              rc=$?
+              printf '%s\n' "${out}"
+              if [ "${rc}" -eq 0 ]; then
+                return 0
+              fi
+              if [ "${rc}" -eq 124 ]; then
+                echo "::error::公開処理がタイムアウトしました registry=${label} elapsed=$(( SECONDS - started ))s budget=${BUDGET}s"
+                return 1
+              fi
+              category="$(classify_publish_failure "${out}" "${rc}")"
+              case "${category}" in
+                conflict)
+                  echo "公開をスキップします: ${PKG}@${VER} registry=${label}（理由: レジストリが同一バージョンの重複公開を拒否したため既に公開済みと判断）"
+                  return 2
+                  ;;
+                auth)
+                  # 要件5.8: 認証拒否・権限不足（HTTP 401 / 403）。
+                  # 取り下げ操作（unpublish / deprecate）はこのワークフローのどこでも実行しない。
+                  echo "::error::認証が拒否されたか権限が不足しています registry=${label} exit_code=${rc}。再試行しません。GITHUB_TOKEN の権限（packages: write）を確認してください。公開npmレジストリへ公開済みの Package_Version は取り下げません（取り下げ操作は一切実行しません）。"
+                  return 1
+                  ;;
+                retryable) ;;
+                *)
+                  echo "::error::既知の分類に該当しない失敗のため再試行しません registry=${label} exit_code=${rc} category=${category}"
+                  return 1
+                  ;;
+              esac
+              if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+                echo "::error::公開に失敗しました registry=${label} attempts=${attempt} last_exit_code=${rc} last_category=${category}"
+                return 1
+              fi
+              echo "::warning::公開に失敗したため再試行します registry=${label} attempt=${attempt}/${MAX_ATTEMPTS} exit_code=${rc} category=${category}"
+              attempt=$(( attempt + 1 ))
+              sleep "${MIN_INTERVAL}"
+            done
+          }
+
+          # setup-node が生成した .npmrc の内容を確認する（要件5.4）。
+          # トークン値そのものではなく ${NODE_AUTH_TOKEN} 参照が書かれていることだけを見る。
+          # ファイル本文は出力しない。
+          NPMRC_PATH="${NPM_CONFIG_USERCONFIG:-${HOME}/.npmrc}"
+          if [ -f "${NPMRC_PATH}" ]; then
+            if grep -qF '${NODE_AUTH_TOKEN}' "${NPMRC_PATH}"; then
+              echo ".npmrc 検証OK: 認証トークンは環境変数参照として記述されています（値は含まれません） path='${NPMRC_PATH}'"
+            else
+              echo "::warning::.npmrc に環境変数参照の記述が見つかりませんでした path='${NPMRC_PATH}'（内容およびトークン値は出力しません）"
+            fi
+            if grep -qF 'npm.pkg.github.com' "${NPMRC_PATH}"; then
+              echo ".npmrc 検証OK: 認証先は ${GHP_REGISTRY} です。"
+            else
+              echo "::warning::.npmrc の認証先が ${GHP_REGISTRY} ではない可能性があります path='${NPMRC_PATH}'"
+            fi
+          else
+            echo "::warning::.npmrc が見つかりませんでした path='${NPMRC_PATH}'"
+          fi
+
+          # 認証情報の未設定・空文字列・空白のみを検出する（値は一切出力しない。要件5.4）
+          if [ -z "${NODE_AUTH_TOKEN//[[:space:]]/}" ]; then
+            echo "::error::GITHUB_TOKEN が未設定または空です（値は出力しません）。${REGISTRY_LABEL} への公開要求は送信しません。公開npmレジストリへ公開済みの Package_Version は取り下げません。"
+          else
+            # name のみを Scoped_Package_Name へ書き換える（要件5.2）。
+            # 再ビルドは行わず、コミット・タグ作成・pushも行わない。
+            node scripts/set-package-field.mjs name "${PKG}"
+            SET_NAME_RC=$?
+            if [ "${SET_NAME_RC}" -ne 0 ]; then
+              echo "::error::Package_Manifest の name を Scoped_Package_Name へ書き換えられませんでした exit_code=${SET_NAME_RC}。${REGISTRY_LABEL} への公開要求は送信しません。"
+            else
+              probe_published "${PKG}" "${VER}" "${GHP_REGISTRY}"
+              PROBE_RC=$?
+              if [ "${PROBE_RC}" -eq 1 ]; then
+                echo "公開をスキップします: ${PKG}@${VER} registry=${REGISTRY_LABEL}（理由: 同一の Package_Version が既に公開済み）"
+                RESULT=skipped
+              else
+                # 未公開（0）と判定不能（2）はいずれも公開を試行する。判定不能を未公開と
+                # 誤認しても、重複は conflict として skipped に落ちる（二重の守り）。
+                # 公開先レジストリは setup-node が再生成した .npmrc が決定する。
+                # provenance は GitHub Packages 側には付与しない（要件4.6はWHERE条件）。
+                publish_with_retry "${REGISTRY_LABEL}" npm publish
+                case $? in
+                  0)
+                    RESULT=success
+                    echo "公開に成功しました: パッケージ名=${PKG} Package_Version=${VER} -> ${REGISTRY_LABEL}"
+                    ;;
+                  2)
+                    RESULT=skipped
+                    ;;
+                  *)
+                    RESULT=failed
+                    ;;
+                esac
+              fi
+            fi
+          fi
+
+          echo "GHP_RESULT=${RESULT}" >> "$GITHUB_ENV"
+          echo "Registry_Publish_Step 2 の結果: ${RESULT}（${PKG}@${VER} / registry=${REGISTRY_LABEL}）"
+          # ジョブを中断させず後続ステップへ進む（要件5.7）
+          exit 0
+      # --- ワークスペース復元（要件5.3 / 9.9）---
+      # if: always() により、公開処理の成否・スキップ・前段ステップの中断に関わらず必ず実行する。
+      # 復元対象は Package_Manifest の version（タスク5.2）と name（Step 2）の書き換え、
+      # および Package_Prepack_Process による README.md の差し替えである。
+      # いずれの復元も失敗をジョブの失敗にしない（|| true）。終了コードの決定は
+      # 次の集約ステップだけが行う。コミット・タグ作成・pushは行わない。
+      - name: Restore workspace
+        if: always()
+        run: |
+          set -uo pipefail
+          # 退避ファイル（.readme-github.bak）が無い場合も終了コード0で終わる冪等な処理
+          node scripts/pack-readme.mjs restore || true
+          # 追跡対象ファイルへの書き換えを HEAD の内容へ戻す（作業ツリー内のみ）
+          git checkout -- package.json package-lock.json README.md || true
+          git status --short || true
+
+      # --- 終了コード集約（要件5.7）---
+      # 両レジストリの Registry_Publish_Step の結果を集約してジョブの終了コードを決める。
+      # 未設定時の既定値を failed とするのはフェイルセーフである。結果記録前に
+      # ランナーが異常終了した場合に成功と誤判定しないため。
+      - name: Aggregate Registry_Publish_Step results
+        if: env.IS_RELEASE_TAG == 'true'
+        run: |
+          set -uo pipefail
+          NPM_RESULT="${NPM_RESULT:-failed}"
+          GHP_RESULT="${GHP_RESULT:-failed}"
+          echo "Registry_Publish_Step results: npm=${NPM_RESULT} github-packages=${GHP_RESULT}"
+          if [ "${NPM_RESULT}" = failed ] || [ "${GHP_RESULT}" = failed ]; then
+            echo "::error::1つ以上のレジストリ公開が失敗しました（npm=${NPM_RESULT}, github-packages=${GHP_RESULT}）"
+            exit 1
+          fi
+          # すべて success または skipped の場合のみ成功として終わる
+          echo "すべてのレジストリ公開が成功またはスキップで完了しました（npm=${NPM_RESULT}, github-packages=${GHP_RESULT}）"
+          exit 0

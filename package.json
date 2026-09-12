@@ -1,15 +1,41 @@
 {
   "name": "rokadoc-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.8",
   "description": "rokadoc MCP Server - Model Context Protocol server for rokadoc RAG service",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "rokadoc-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuma-shin/rokadoc-mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/yuma-shin/rokadoc-mcp-server/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "clean": "node scripts/clean-dist.mjs",
+    "prebuild": "npm run clean",
     "build": "tsc",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:property": "vitest run tests/property/",
     "test:unit": "vitest run tests/unit/",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepack": "node scripts/pack-readme.mjs substitute",
+    "postpack": "node scripts/pack-readme.mjs restore",
+    "pack:check": "npm pack --dry-run --json"
   },
   "keywords": [
     "mcp",
@@ -26,6 +52,7 @@
     "@types/node": "^26.4.1",
     "fast-check": "^4.9.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "yaml": "2.9.0"
   }
 }

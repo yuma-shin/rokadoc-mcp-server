@@ -26,3 +26,6 @@ Desktop.ini
 *.swo
 
 DOCKERHUB.md
+
+# README substitution backup (npm prepack)
+.readme-github.bak

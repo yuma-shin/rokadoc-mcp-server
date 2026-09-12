@@ -4,9 +4,34 @@ NTTドコモビジネスが提供するRAGサービス「rokadoc」の機能を�
 
 VS Code、Kiro、Claude Desktop等のMCPクライアントから、ドキュメント変換やRAG検索をツールとして直接呼び出せます。
 
+## 配布形態の選択
+
+DockerイメージとNPMパッケージの2形態で配布しています。どちらもMCPサーバーとしての機能は同一です。
+
+| 観点                              | Dockerイメージ                                            | NPMパッケージ                                     |
+| --------------------------------- | --------------------------------------------------------- | ------------------------------------------------- |
+| 前提条件                          | Docker                                                    | Node.js `>=22`                                    |
+| 共通の前提条件                    | rokadoc API Key                                           | rokadoc API Key                                   |
+| 起動方法                          | `docker run -i --rm ...`                                  | `npx -y rokadoc-mcp-server`                       |
+| `convert_document` のファイルパス | コンテナ内パス（`-v` でマウントし、パスの読み替えが必要） | ホストの絶対パスをそのまま指定（マウント不要）    |
+| 環境変数の渡し方                  | `docker run` の `-e` オプション                           | MCPクライアント設定の `env`                       |
+| 更新方法                          | イメージの再取得（`docker pull`）                         | バージョン指定の変更、または `@latest` で自動取得 |
+
+- ローカルファイルを頻繁に変換する場合は、パスの読み替えが不要なNPMパッケージが扱いやすいです
+- 実行環境をコンテナに隔離したい場合や、Node.jsを用意したくない場合はDockerイメージを選択してください
+
+npmレジストリのパッケージページ向けの説明（npx中心の導入手順のみを記載）は [NPM.md](NPM.md) にあります。
+
 ## 前提条件
 
+Dockerイメージを利用する場合:
+
 - **Docker**: コンテナの実行に必要
+- **rokadoc API Key**: rokadocサービスへの認証に使用するAPIキー
+
+NPMパッケージを利用する場合:
+
+- **Node.js**: `>=22`（`node --version` で確認できます）
 - **rokadoc API Key**: rokadocサービスへの認証に使用するAPIキー
 
 ## イメージの取得
@@ -211,6 +236,156 @@ Base URLを変更する場合は `args` に環境変数を追加します:
   }
 }
 ```
+
+## NPMパッケージで利用する
+
+Node.js `>=22` があれば、Dockerなしで `npx` から直接起動できます。パッケージ名は `rokadoc-mcp-server` です。
+
+```bash
+ROKADOC_API_KEY=<your-api-key> npx -y rokadoc-mcp-server
+```
+
+Windows (PowerShell) の場合:
+
+```powershell
+$env:ROKADOC_API_KEY="<your-api-key>"; npx -y rokadoc-mcp-server
+```
+
+MCPサーバーは標準入出力（stdio）でMCPクライアントと通信します。通常は手動起動せず、後述の設定例のとおりMCPクライアントに登録してください。
+
+### バージョンの指定
+
+| 指定方法               | コマンド例                           | 説明                           |
+| ---------------------- | ------------------------------------ | ------------------------------ |
+| 特定バージョン固定     | `npx -y rokadoc-mcp-server@1.0.7`    | `@<version>` で固定            |
+| 最新リリース           | `npx -y rokadoc-mcp-server@latest`   | 常に最新版を取得               |
+| メジャーバージョン追従 | `npx -y "rokadoc-mcp-server@^1.0.0"` | v1系の最新（破壊的変更を除外） |
+| マイナーバージョン追従 | `npx -y "rokadoc-mcp-server@~1.0.0"` | v1.0系の最新（パッチ更新のみ） |
+
+安定運用にはメジャーバージョン追従（`^1.0.0`）を推奨します。範囲指定（`^` / `~`）はシェルが解釈しないよう引用符で囲んでください。
+
+### 環境変数
+
+Dockerイメージ経由の場合と同じ環境変数を使用します。
+
+| 環境変数           | 必須   | デフォルト値                  | 説明                   |
+| ------------------ | ------ | ----------------------------- | ---------------------- |
+| `ROKADOC_API_KEY`  | はい   | -                             | rokadoc APIの認証キー  |
+| `ROKADOC_BASE_URL` | いいえ | `https://api.rokadoc.ntt.com` | rokadoc APIのベースURL |
+
+`ROKADOC_API_KEY` はシェルの環境変数として渡すか、MCPクライアント設定の `env` に指定します。`ROKADOC_BASE_URL` は未設定の場合に既定値 `https://api.rokadoc.ntt.com` が適用されます。オンプレミス環境に接続する場合のみ設定してください。
+
+### MCPクライアント設定（VS Code / Kiro）
+
+`.vscode/mcp.json` または `.kiro/settings/mcp.json` に以下をそのまま追加します。
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "rokadoc-api-key",
+      "description": "rokadoc API Key",
+      "password": true
+    }
+  ],
+  "servers": {
+    "rokadoc": {
+      "command": "npx",
+      "args": ["-y", "rokadoc-mcp-server"],
+      "env": {
+        "ROKADOC_API_KEY": "${input:rokadoc-api-key}"
+      }
+    }
+  }
+}
+```
+
+バージョンを固定する場合は `args` を `["-y", "rokadoc-mcp-server@1.0.7"]` に置き換えてください。
+
+### MCPクライアント設定（Claude Desktop）
+
+`claude_desktop_config.json` に以下をそのまま追加します（Claude Desktopは `mcpServers` キーを使用します）。
+
+```json
+{
+  "mcpServers": {
+    "rokadoc": {
+      "command": "npx",
+      "args": ["-y", "rokadoc-mcp-server"],
+      "env": {
+        "ROKADOC_API_KEY": "<your-api-key>"
+      }
+    }
+  }
+}
+```
+
+オンプレミス環境に接続する場合は `env` に `ROKADOC_BASE_URL` を追加します。
+
+```json
+{
+  "mcpServers": {
+    "rokadoc": {
+      "command": "npx",
+      "args": ["-y", "rokadoc-mcp-server"],
+      "env": {
+        "ROKADOC_API_KEY": "<your-api-key>",
+        "ROKADOC_BASE_URL": "https://rokadoc.your-company.com"
+      }
+    }
+  }
+}
+```
+
+`args` には必ず `-y` を含めてください。未インストール時に `npx` が確認プロンプトを表示すると、MCPのハンドシェイクが成立しません。
+
+### ファイルパスの扱い
+
+NPMパッケージ経由の場合、MCPサーバーはMCPクライアントと同じホスト上のプロセスとして動作します。`convert_document` の `file_path` には **ホストの絶対パスをそのまま** 指定でき、Dockerイメージ経由で必要となるボリュームマウント（`-v`）とコンテナ内パスへの読み替えは不要です。
+
+Windows の例:
+
+```
+C:\Users\username\Documents\report.pdf
+```
+
+macOS / Linux の例:
+
+```
+/Users/username/Documents/report.pdf
+```
+
+## GitHub Packagesから取得する
+
+公開npmレジストリと同一の内容を、GitHub Packagesにも `@yuma-shin/rokadoc-mcp-server` として公開しています。GitHub認証のみでパッケージを取得したい場合はこちらを利用してください。
+
+1. スコープの参照先をGitHub Packagesに向けます。プロジェクトルート（またはホームディレクトリ）の `.npmrc` に以下を記述します。
+
+   ```ini
+   @yuma-shin:registry=https://npm.pkg.github.com
+   ```
+
+2. GitHub Packagesの認証情報（`read:packages` スコープを持つPersonal Access Token）を設定します。トークンは `.npmrc` に直接書かず、環境変数を参照させることを推奨します。
+
+   ```ini
+   @yuma-shin:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
+   ```
+
+   ```bash
+   export GITHUB_TOKEN=<your-personal-access-token>
+   ```
+
+   `npm login --scope=@yuma-shin --registry=https://npm.pkg.github.com` で対話的に認証情報を保存することもできます。
+
+3. スコープ付きパッケージ名を指定してインストールします。
+
+   ```bash
+   npm install @yuma-shin/rokadoc-mcp-server
+   ```
+
+インストール後は `npx @yuma-shin/rokadoc-mcp-server` で起動できます。`.npmrc` と認証情報の設定が必要なため、MCPクライアント設定例のように `npx` から直接取得する用途では、公開npmレジストリの `rokadoc-mcp-server` を利用してください。
 
 ## 提供ツール
 
@@ -447,6 +622,48 @@ Error: ROKADOC_BASE_URL の形式が不正です。http:// または https:// �
 ```
 
 → `ROKADOC_BASE_URL` に有効なURL（`https://` で始まる）を設定してください。
+
+### NPMパッケージ起動エラー
+
+**APIキー未設定（`ROKADOC_API_KEY`）:**
+
+`npx -y rokadoc-mcp-server` の標準エラー出力に次のメッセージが出力され、MCPハンドシェイクを開始せずに終了コード1で終了します。
+
+```
+[設定エラー] 環境変数 ROKADOC_API_KEY が設定されていないか、空白のみです。有効なAPIキーを設定してください。
+```
+
+MCPクライアント経由の場合は、サーバーが起動直後に終了するため「接続できない」「サーバーが終了した」旨の表示になります。詳細はクライアントのMCPサーバーログ（標準エラー出力）で確認してください。
+
+**対処法:**
+
+- MCPクライアント設定の `env` に `ROKADOC_API_KEY` を指定する（前述の設定例を参照）
+- 手動起動時は `ROKADOC_API_KEY=<your-api-key> npx -y rokadoc-mcp-server` のように環境変数を渡す
+- 空文字列や空白のみの値を設定していないか確認する（前後の空白は自動的に除去されます）
+
+**Node.jsのバージョン不足（`EBADENGINE`）:**
+
+Node.js `22` 未満の環境では、パッケージ取得時に標準エラー出力へ次のような警告が出力されます。
+
+```
+npm warn EBADENGINE Unsupported engine {
+npm warn EBADENGINE   package: 'rokadoc-mcp-server@1.0.7',
+npm warn EBADENGINE   required: { node: '>=22' },
+npm warn EBADENGINE   current: { node: 'v20.11.0', npm: '10.2.4' }
+npm warn EBADENGINE }
+```
+
+警告のまま起動を試みても、実行時に構文エラーやAPI未定義エラーで異常終了する場合があります。
+
+**対処法:**
+
+- `node --version` で実行中のバージョンを確認する
+- Node.js `22` 以降へ更新する（nvm等のバージョン管理ツールを利用している場合は、MCPクライアントが参照するNode.jsも切り替わっているか確認する）
+- Node.jsを更新できない場合は、Dockerイメージでの利用を検討する
+
+### npm向けREADME
+
+npmレジストリのパッケージページに掲載しているnpx中心の導入手順は [NPM.md](NPM.md) を参照してください。環境変数（`ROKADOC_API_KEY` / `ROKADOC_BASE_URL`）、`ROKADOC_BASE_URL` の既定値、Node.js最小バージョン `>=22` は本ドキュメントと同一の値です。
 
 ## ライセンス
 
