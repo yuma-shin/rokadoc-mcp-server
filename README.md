@@ -8,14 +8,15 @@ VS Code、Kiro、Claude Desktop等のMCPクライアントから、ドキュメ�
 
 DockerイメージとNPMパッケージの2形態で配布しています。どちらもMCPサーバーとしての機能は同一です。
 
-| 観点                              | Dockerイメージ                                            | NPMパッケージ                                     |
-| --------------------------------- | --------------------------------------------------------- | ------------------------------------------------- |
-| 前提条件                          | Docker                                                    | Node.js `>=22`                                    |
-| 共通の前提条件                    | rokadoc API Key                                           | rokadoc API Key                                   |
-| 起動方法                          | `docker run -i --rm ...`                                  | `npx -y rokadoc-mcp-server`                       |
-| `convert_document` のファイルパス | コンテナ内パス（`-v` でマウントし、パスの読み替えが必要） | ホストの絶対パスをそのまま指定（マウント不要）    |
-| 環境変数の渡し方                  | `docker run` の `-e` オプション                           | MCPクライアント設定の `env`                       |
-| 更新方法                          | イメージの再取得（`docker pull`）                         | バージョン指定の変更、または `@latest` で自動取得 |
+| 観点                              | Dockerイメージ                                                      | NPMパッケージ                                           |
+| --------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------- |
+| 前提条件                          | Docker                                                              | Node.js `>=22`                                          |
+| 共通の前提条件                    | rokadoc API Key                                                     | rokadoc API Key                                         |
+| 起動方法                          | `docker run -i --rm ...`                                            | `npx -y rokadoc-mcp-server`                             |
+| `convert_document` のファイルパス | コンテナ内パス（`-v` でマウントし、パスの読み替えが必要）           | ホストの絶対パスをそのまま指定（マウント不要）          |
+| 環境変数の渡し方                  | `docker run` の `-e` オプション                                     | MCPクライアント設定の `env`                             |
+| 更新方法                          | イメージの再取得（`docker pull`）                                   | バージョン指定の変更、または `@latest` で自動取得       |
+| 配布ページ                        | [Docker Hub](https://hub.docker.com/r/snackpans/rokadoc-mcp-server) | [npm](https://www.npmjs.com/package/rokadoc-mcp-server) |
 
 - ローカルファイルを頻繁に変換する場合は、パスの読み替えが不要なNPMパッケージが扱いやすいです
 - 実行環境をコンテナに隔離したい場合や、Node.jsを用意したくない場合はDockerイメージを選択してください
@@ -39,6 +40,8 @@ NPMパッケージを利用する場合:
 Docker Hub または GitHub Container Registry のどちらからでも利用可能です。
 
 ### Docker Hub
+
+イメージのページは [Docker Hub](https://hub.docker.com/r/snackpans/rokadoc-mcp-server) にあります。
 
 ```bash
 docker pull snackpans/rokadoc-mcp-server
@@ -239,7 +242,7 @@ Base URLを変更する場合は `args` に環境変数を追加します:
 
 ## NPMパッケージで利用する
 
-Node.js `>=22` があれば、Dockerなしで `npx` から直接起動できます。パッケージ名は `rokadoc-mcp-server` です。
+Node.js `>=22` があれば、Dockerなしで `npx` から直接起動できます。パッケージ名は `rokadoc-mcp-server` です。パッケージのページは [npm](https://www.npmjs.com/package/rokadoc-mcp-server) にあります。
 
 ```bash
 ROKADOC_API_KEY=<your-api-key> npx -y rokadoc-mcp-server
