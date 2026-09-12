@@ -18,6 +18,7 @@ const REPO_ROOT = new URL("../../", import.meta.url);
 const NPM_WORKFLOW_PATH = ".github/workflows/publish-npm.yml";
 const DOCKER_WORKFLOW_PATH = ".github/workflows/publish.yml";
 const DOCKERFILE_PATH = "Dockerfile";
+const PACKAGE_JSON_PATH = "package.json";
 
 function readText(relativePath: string): string {
   return readFileSync(new URL(relativePath, REPO_ROOT), "utf8");
@@ -184,9 +185,150 @@ function actionShaMap(workflowText: string): Map<string, Set<string>> {
   return map;
 }
 
+/** 行末の `\` による継続行を1行へ畳み、各行を trim した配列を返す。 */
+function dockerfileLines(dockerfile: string): string[] {
+  return dockerfile
+    .replace(/\\\r?\n\s*/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.trim());
+}
+
+/** 指定ステージ（`FROM ... AS <stage>`）の命令行のみを返す。 */
+function dockerStageLines(dockerfile: string, stage: string): string[] {
+  const lines = dockerfileLines(dockerfile);
+  const start = lines.findIndex((line) =>
+    new RegExp(`^FROM\\s+\\S+\\s+AS\\s+${stage}\\b`, "i").test(line),
+  );
+  if (start === -1) {
+    throw new Error(`${DOCKERFILE_PATH} に 'AS ${stage}' ステージが存在しない`);
+  }
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => /^FROM\s/i.test(line));
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** `COPY` 命令のコピー元・コピー先（フラグを除いたもの）。 */
+interface CopyInstruction {
+  readonly line: string;
+  readonly sources: readonly string[];
+  readonly destination: string;
+}
+
+function parseCopy(line: string): CopyInstruction | undefined {
+  const match = /^COPY\s+(.*)$/i.exec(line);
+  if (match === null) {
+    return undefined;
+  }
+  const tokens = (match[1] as string)
+    .split(/\s+/)
+    .filter((token) => token.length > 0 && !token.startsWith("--"));
+  if (tokens.length < 2) {
+    return undefined;
+  }
+  return {
+    line,
+    sources: tokens.slice(0, -1),
+    destination: tokens[tokens.length - 1] as string,
+  };
+}
+
+/** `./` と末尾 `/` を落とした比較用のパス表現。 */
+function normalizePath(path: string): string {
+  return path.replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+/**
+ * `COPY` 命令が、ビルドコンテキスト上の `target`（例: `scripts/clean-dist.mjs`）を
+ * イメージ内の同一相対パスへ取り込むかを判定する。
+ * ディレクトリ単位のコピー（`COPY scripts/ ./scripts/`）も配下のファイルを覆うものとして扱い、
+ * コピー先が相対パスを保たない場合（`COPY scripts/ ./tools/`）は覆わないものとする。
+ */
+function copyCovers(copy: CopyInstruction, target: string): boolean {
+  const destination = normalizePath(copy.destination);
+  const targetDirectory = target.includes("/")
+    ? target.slice(0, target.lastIndexOf("/"))
+    : "";
+
+  return copy.sources.some((source) => {
+    const normalized = normalizePath(source);
+    if (normalized === "" || normalized === ".") {
+      // ビルドコンテキスト全体のコピー。
+      return destination === "" || destination === ".";
+    }
+    if (normalized === target) {
+      // 単一ファイル指定。コピー先は所属ディレクトリか同一パスのみ。
+      return destination === targetDirectory || destination === target;
+    }
+    if (target.startsWith(`${normalized}/`)) {
+      // ディレクトリごとのコピー。イメージ内で相対パスが保たれる場合のみ解決できる。
+      return destination === "" || destination === normalized;
+    }
+    return false;
+  });
+}
+
+/**
+ * `npm run <name>` のライフサイクル連鎖（`pre<name>` / `<name>` / `post<name>` と
+ * その中で呼ばれる `npm run` の連鎖）に含まれるコマンド本文をすべて返す。
+ */
+function lifecycleCommands(
+  scriptName: string,
+  scripts: Readonly<Record<string, string>>,
+  visited: Set<string> = new Set<string>(),
+): string[] {
+  if (visited.has(scriptName)) {
+    return [];
+  }
+  visited.add(scriptName);
+
+  const commands: string[] = [];
+  for (const name of [`pre${scriptName}`, scriptName, `post${scriptName}`]) {
+    const command = scripts[name];
+    if (typeof command !== "string") {
+      continue;
+    }
+    commands.push(command);
+    for (const nested of command.matchAll(
+      /\bnpm\s+run(?:-script)?\s+([\w:.-]+)/g,
+    )) {
+      commands.push(
+        ...lifecycleCommands(nested[1] as string, scripts, visited),
+      );
+    }
+  }
+  return commands;
+}
+
+/** ライフサイクル連鎖が参照する `scripts/*.mjs` のパス一覧（package.json から導出）。 */
+function referencedScriptFiles(
+  scriptName: string,
+  scripts: Readonly<Record<string, string>>,
+): string[] {
+  const paths = new Set<string>();
+  for (const command of lifecycleCommands(scriptName, scripts)) {
+    for (const match of command.matchAll(
+      /(?:^|[\s"'`=(])((?:\.\/)?scripts\/[\w.\-/]+\.mjs)/g,
+    )) {
+      paths.add(normalizePath(match[1] as string));
+    }
+  }
+  return [...paths].sort();
+}
+
 const npmWorkflowText = readText(NPM_WORKFLOW_PATH);
 const dockerWorkflowText = readText(DOCKER_WORKFLOW_PATH);
 const dockerfileText = readText(DOCKERFILE_PATH);
+
+const packageJson = asRecord(
+  JSON.parse(readText(PACKAGE_JSON_PATH)),
+  PACKAGE_JSON_PATH,
+);
+const packageScripts = asRecord(
+  packageJson.scripts,
+  `${PACKAGE_JSON_PATH} の scripts`,
+) as Record<string, string>;
+/** `npm run build` 実行時にイメージ内へ存在していなければならない scripts/*.mjs。 */
+const buildScriptFiles = referencedScriptFiles("build", packageScripts);
 
 const npmWorkflow = parseWorkflow(NPM_WORKFLOW_PATH);
 const dockerWorkflow = parseWorkflow(DOCKER_WORKFLOW_PATH);
@@ -624,5 +766,58 @@ describe(`${DOCKERFILE_PATH}: 起動コマンドの非回帰ガード（要件7.
       .filter((line) => line.startsWith("ENTRYPOINT"));
 
     expect(entrypoints).toEqual(['ENTRYPOINT ["node", "dist/index.js"]']);
+  });
+});
+
+describe(`${DOCKERFILE_PATH}: builderステージのビルド依存ガード（要件7.3）`, () => {
+  const builderLines = dockerStageLines(dockerfileText, "builder");
+  const buildRunIndex = builderLines.findIndex((line) =>
+    /^RUN\s+npm\s+run\s+build\b/.test(line),
+  );
+  const copiesBeforeBuild = builderLines
+    .slice(0, buildRunIndex === -1 ? 0 : buildRunIndex)
+    .map((line) => parseCopy(line))
+    .filter((copy): copy is CopyInstruction => copy !== undefined)
+    // 他ステージからのコピー（`--from=`）はビルドコンテキストの解決に使えない。
+    .filter((copy) => !/--from=/i.test(copy.line));
+
+  it("builderステージに `RUN npm run build` が存在する", () => {
+    expect(buildRunIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  it("build のライフサイクル連鎖が参照する scripts/*.mjs を package.json から導出できる", () => {
+    // 導出結果が空だと以降の検査が空振りするため、非空であること自体を固定する。
+    expect(buildScriptFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(buildScriptFiles)(
+    "%s が `RUN npm run build` より前に COPY されている",
+    (scriptPath) => {
+      // 要件7.3: prebuild / postbuild で起動されるスクリプトがイメージ内に無いと
+      // `npm run build` が MODULE_NOT_FOUND で失敗し、Dockerビルドが終了コード0で完了しない。
+      const covering = copiesBeforeBuild.filter((copy) =>
+        copyCovers(copy, scriptPath),
+      );
+      expect(
+        covering.map((copy) => copy.line),
+        `${DOCKERFILE_PATH} の builderステージが ${scriptPath} を \`RUN npm run build\` より前にコピーしていない`,
+      ).not.toEqual([]);
+    },
+  );
+
+  it("production ステージは scripts/ を必要としない（インストール時ライフサイクルが無い）", () => {
+    // `npm ci --omit=dev` は preinstall / install / postinstall / prepare を実行するが、
+    // package.json はそれらを定義していないため production 側のコピーは不要。
+    const installLifecycle = [
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepare",
+    ];
+    expect(
+      installLifecycle.filter((name) =>
+        Object.prototype.hasOwnProperty.call(packageScripts, name),
+      ),
+    ).toEqual([]);
   });
 });

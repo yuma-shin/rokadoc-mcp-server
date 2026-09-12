@@ -12,7 +12,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Copy source and compile
+# scripts/ is required by the prebuild lifecycle (npm run clean -> scripts/clean-dist.mjs)
 COPY tsconfig.json ./
+COPY scripts/ ./scripts/
 COPY src/ ./src/
 RUN npm run build
 
