@@ -46,13 +46,13 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.1",
     "fast-check": "^4.9.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10",
+    "vitest": "^5.0.0",
     "yaml": "2.9.0"
   }
 }
