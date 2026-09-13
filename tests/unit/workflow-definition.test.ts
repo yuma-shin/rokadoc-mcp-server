@@ -389,6 +389,9 @@ const publishSteps = npmSteps.filter((step) =>
 );
 const publishStep1 = stepByNameFragment("Registry_Publish_Step 1");
 const publishStep2 = stepByNameFragment("Registry_Publish_Step 2");
+const installTrustedPublishingNpmStep = stepByNameFragment(
+  "Install npm CLI with Trusted Publishing support",
+);
 const configureGhpStep = stepByNameFragment(
   "Configure npm for GitHub Packages",
 );
@@ -536,18 +539,28 @@ describe(`${NPM_WORKFLOW_PATH}: 公開ステップの条件と認証（要件4.5
     }
   });
 
-  const tokenCases: ReadonlyArray<readonly [string, string]> = [
-    ["Step 1", "${{ secrets.NPM_TOKEN }}"],
-    ["Step 2", "${{ secrets.GITHUB_TOKEN }}"],
-  ];
+  it("Step 1 は長期 npm token を注入せず OIDC を使用する", () => {
+    expect(publishStep1.env.NODE_AUTH_TOKEN).toBeUndefined();
+    expect(JSON.stringify(publishStep1.raw)).not.toContain("secrets.NPM_TOKEN");
+  });
 
-  it.each(tokenCases)(
-    "%s の NODE_AUTH_TOKEN が %s である",
-    (label, expected) => {
-      const step = label === "Step 1" ? publishStep1 : publishStep2;
-      expect(step.env.NODE_AUTH_TOKEN).toBe(expected);
-    },
-  );
+  it("公開前に OIDC 対応 npm CLI をインストールする", () => {
+    expect(installTrustedPublishingNpmStep.ifCondition).toContain(
+      "IS_RELEASE_TAG",
+    );
+    expect(installTrustedPublishingNpmStep.run).toContain(
+      "npm install --global npm@11.15.0",
+    );
+    expect(installTrustedPublishingNpmStep.index).toBeLessThan(
+      publishStep1.index,
+    );
+  });
+
+  it("Step 2 は GitHub Packages 用の GITHUB_TOKEN を使用する", () => {
+    expect(publishStep2.env.NODE_AUTH_TOKEN).toBe(
+      "${{ secrets.GITHUB_TOKEN }}",
+    );
+  });
 });
 
 describe(`${NPM_WORKFLOW_PATH}: provenance とバージョン導出（要件4.6 / 6.6）`, () => {
