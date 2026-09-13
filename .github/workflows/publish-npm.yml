@@ -16,7 +16,7 @@ concurrency:
 
 permissions:
   contents: read # checkout のみ。タグ作成・push は行わない（要件6-2）
-  id-token: write # npm provenance（要件4-6）
+  id-token: write # npm Trusted Publishing（OIDC）と provenance（要件4-6）
   packages: write # GitHub Packages 公開（要件5-4）
 
 jobs:
@@ -65,6 +65,15 @@ jobs:
       - run: npm run build
 
       - run: npm test
+
+      # Trusted Publishing（OIDC）は npm 11.5.1 以降が必要。
+      # Node.js 22 の同梱バージョンに依存しないよう、staged publishing にも対応する版へ固定する。
+      - name: Install npm CLI with Trusted Publishing support
+        if: env.IS_RELEASE_TAG == 'true'
+        run: |
+          npm install --global npm@11.15.0
+          npm --version
+
       # --- 公開前検証ゲート（要件2.6 / 1.2 / 1.6 / 9.10）---
       # この3ゲート（タグ形式 / Build_Artifact / NPM.md）を通過するまで、
       # いかなるレジストリへも公開要求を送信しない。いずれもNGなら即時中断する。
@@ -113,7 +122,6 @@ jobs:
       - name: "Registry_Publish_Step 1: Public NPM Registry"
         if: env.IS_RELEASE_TAG == 'true'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -uo pipefail
@@ -206,7 +214,7 @@ jobs:
                   return 2
                   ;;
                 auth)
-                  echo "::error::認証が拒否されたか権限が不足しています registry=${label} exit_code=${rc}。再試行しません。Registry_Credential（GitHub Secrets の設定値）を確認してください。既に公開済みの Package_Version には一切変更を加えません。"
+                  echo "::error::OIDC 認証が拒否されたか権限が不足しています registry=${label} exit_code=${rc}。再試行しません。npmjs.com の Trusted Publisher（repository / workflow filename / allowed actions）と GitHub Actions の id-token: write を確認してください。既に公開済みの Package_Version には一切変更を加えません。"
                   return 1
                   ;;
                 retryable) ;;
@@ -225,34 +233,31 @@ jobs:
             done
           }
 
-          # 認証情報の未設定・空文字列・空白のみを検出する（値は一切出力しない。要件4.5 / 4.9）
-          if [ -z "${NODE_AUTH_TOKEN//[[:space:]]/}" ]; then
-            echo "::error::NPM_TOKEN シークレットが未設定または空です（値は出力しません）。${REGISTRY_LABEL} への公開要求は送信しません。"
+          # npm CLI が GitHub Actions の OIDC トークンを短期の公開資格情報へ交換する。
+          # 長期の NPM_TOKEN は注入せず、OIDC 設定不備をトークンへフォールバックさせない。
+          probe_published "${PKG}" "${VER}" "${NPM_REGISTRY}"
+          PROBE_RC=$?
+          if [ "${PROBE_RC}" -eq 1 ]; then
+            echo "公開をスキップします: ${PKG}@${VER} registry=${REGISTRY_LABEL}（理由: 同一の Package_Version が既に公開済み）"
+            RESULT=skipped
           else
-            probe_published "${PKG}" "${VER}" "${NPM_REGISTRY}"
-            PROBE_RC=$?
-            if [ "${PROBE_RC}" -eq 1 ]; then
-              echo "公開をスキップします: ${PKG}@${VER} registry=${REGISTRY_LABEL}（理由: 同一の Package_Version が既に公開済み）"
-              RESULT=skipped
-            else
-              # 未公開（0）と判定不能（2）はいずれも公開を試行する。判定不能を未公開と
-              # 誤認しても、重複は conflict として skipped に落ちる（二重の守り）。
-              # 公開先レジストリは setup-node が生成した .npmrc が決定する。
-              # --access は publishConfig.access で代替しているため付けない。
-              publish_with_retry "${REGISTRY_LABEL}" npm publish --provenance
-              case $? in
-                0)
-                  RESULT=success
-                  echo "公開に成功しました: ${PKG}@${VER} -> ${REGISTRY_LABEL}"
-                  ;;
-                2)
-                  RESULT=skipped
-                  ;;
-                *)
-                  RESULT=failed
-                  ;;
-              esac
-            fi
+            # 未公開（0）と判定不能（2）はいずれも公開を試行する。判定不能を未公開と
+            # 誤認しても、重複は conflict として skipped に落ちる（二重の守り）。
+            # 公開先レジストリは setup-node が生成した .npmrc が決定する。
+            # --access は publishConfig.access で代替しているため付けない。
+            publish_with_retry "${REGISTRY_LABEL}" npm publish --provenance
+            case $? in
+              0)
+                RESULT=success
+                echo "公開に成功しました: ${PKG}@${VER} -> ${REGISTRY_LABEL}"
+                ;;
+              2)
+                RESULT=skipped
+                ;;
+              *)
+                RESULT=failed
+                ;;
+            esac
           fi
 
           echo "NPM_RESULT=${RESULT}" >> "$GITHUB_ENV"
