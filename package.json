@@ -12,7 +12,7 @@
     "LICENSE.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24.21.0"
   },
   "repository": {
     "type": "git",
@@ -46,13 +46,13 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.4.1",
-    "fast-check": "^4.9.0",
+    "@types/node": "^26.6.2",
+    "fast-check": "^4.10.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0",
-    "yaml": "2.9.0"
+    "vitest": "^5.0.1",
+    "yaml": "2.9.1"
   }
 }
