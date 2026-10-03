@@ -7,6 +7,13 @@
   groupName: "all dependencies",
   packageRules: [
     {
+      description: "Keep Node.js engine requirement unchanged",
+      matchManagers: ["npm"],
+      matchDepTypes: ["engines"],
+      matchPackageNames: ["node"],
+      enabled: false,
+    },
+    {
       matchManagers: ["github-actions"],
       groupName: "github-actions",
       pinDigests: true,
