@@ -1,5 +1,5 @@
 {
-  automerge: true,
+  automerge: false,
   dependencyDashboard: false,
   labels: ["dependencies"],
   minimumReleaseAge: "7 days",
@@ -19,7 +19,13 @@
       pinDigests: true,
     },
     {
+      matchUpdateTypes: ["patch", "minor"],
+      automerge: true,
+      automergeType: "pr",
+    },
+    {
       matchUpdateTypes: ["major"],
+      automerge: false,
       prBodyNotes: [
         ":warning: **メジャーバージョンの更新が含まれます。CHANGELOG を確認してください。**",
       ],
